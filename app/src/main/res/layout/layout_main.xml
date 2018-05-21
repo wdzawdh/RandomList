@@ -1,14 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout
+<LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/scrollView"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:orientation="vertical">
 
-    <com.cw.randomlist.RandomList
+    <Button
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:onClick="onGo"
+        android:text="go 10"/>
+
+    <Button
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:onClick="add"
+        android:text="add 10"/>
+
+    <Button
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:onClick="addEnd"
+        android:text="add End Or Start"/>
+
+    <com.cw.randomlist.RandomLayout
         android:id="@+id/randomList"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:paddingBottom="100dp"
-        android:paddingTop="100dp"/>
-</FrameLayout>
+        android:layout_height="match_parent"/>
+</LinearLayout>

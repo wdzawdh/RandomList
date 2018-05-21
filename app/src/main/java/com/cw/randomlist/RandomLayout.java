@@ -2,14 +2,10 @@ package com.cw.randomlist;
 
 import android.content.Context;
 import android.graphics.Rect;
-import android.support.annotation.IntDef;
 import android.util.AttributeSet;
-import android.util.DisplayMetrics;
 import android.view.View;
 import android.view.ViewGroup;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -17,7 +13,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
-public class RandomLayout extends ViewGroup {
+public class RandomLayout extends ScrollViewGroup {
 
     private Random mRdm;
     /**
@@ -29,9 +25,17 @@ public class RandomLayout extends ViewGroup {
      */
     private int mYRegularity;
     /**
+     * 尾部空闲的个数
+     */
+    private int mEndFree;
+    /**
+     * 头部空闲的个数
+     */
+    private int mStartFree;
+    /**
      * 区域的二维数组
      */
-    private int[][] mAreaDensity;
+    private int[][] mAreaDensity = new int[4][0];
     /**
      * 存放已经确定位置的View
      */
@@ -39,7 +43,7 @@ public class RandomLayout extends ViewGroup {
     /**
      * 提供子View的adapter
      */
-    private Adapter mAdapter;
+    private RandomAdapter mAdapter;
     /**
      * 记录被回收的View，以便重复利用
      */
@@ -49,13 +53,13 @@ public class RandomLayout extends ViewGroup {
      */
     private boolean mHasLayout;
     /**
-     * 排列方向
+     * 记录本次计算的自身宽高
      */
-    private int mOrientation = HORIZONTAL;
+    private int mLastH;
     /**
-     * 屏幕宽高
+     * 结尾布局
      */
-    private int mScreenWidth, mScreenHeigth;
+    private boolean mLayoutOnEnd = true;
 
     /**
      * 构造方法
@@ -65,25 +69,32 @@ public class RandomLayout extends ViewGroup {
     }
 
     public RandomLayout(Context context, AttributeSet attrs) {
-        this(context, attrs, 0);
-    }
-
-    public RandomLayout(Context context, AttributeSet attrs, int defStyleAttr) {
-        super(context, attrs, defStyleAttr);
+        super(context, attrs);
         init();
     }
 
     /**
-     * 初始化方法
+     * 设置数据源
      */
-    private void init() {
-        mHasLayout = false;
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        mScreenWidth = dm.widthPixels;
-        mScreenHeigth = dm.heightPixels;
-        mRdm = new Random();
-        mFixedViews = new HashSet<>();
-        mRecycledViews = new LinkedList<>();
+    public void setAdapter(RandomAdapter adapter) {
+        this.mAdapter = adapter;
+        this.mAdapter.setRandomLayout(this);
+    }
+
+    /**
+     * 设置布局方向
+     *
+     * @param layoutOnEnd layoutOnEnd
+     */
+    public void setLayoutOnEnd(boolean layoutOnEnd) {
+        mLayoutOnEnd = layoutOnEnd;
+    }
+
+    /**
+     * 布局方向是否是向后添加
+     */
+    public boolean isLayoutOnEnd() {
+        return mLayoutOnEnd;
     }
 
     public boolean hasLayouted() {
@@ -91,21 +102,13 @@ public class RandomLayout extends ViewGroup {
     }
 
     /**
-     * 设置mXRegularity和mXRegularity，确定区域的个数
+     * 初始化方法
      */
-    public void setRegularity(int xRegularity) {
-        if (xRegularity < 1) return;
-        this.mXRegularity = xRegularity;
-        this.mYRegularity = (int) Math.ceil((float) mAdapter.getCount() / mXRegularity);
-        this.mAreaDensity = new int[mYRegularity][mXRegularity];// 存放区域的二维数组
-    }
-
-    /**
-     * 设置数据源
-     */
-    public void setAdapter(Adapter adapter) {
-        this.mAdapter = adapter;
-        setRegularity(4);
+    private void init() {
+        mHasLayout = false;
+        mRdm = new Random();
+        mFixedViews = new HashSet<>();
+        mRecycledViews = new LinkedList<>();
     }
 
     /**
@@ -118,6 +121,23 @@ public class RandomLayout extends ViewGroup {
                 mAreaDensity[i][j] = 0;
             }
         }
+    }
+
+    /**
+     * 设置mXRegularity和mXRegularity，确定区域的个数
+     */
+    private void refreshRegularity() {
+        this.mXRegularity = mAreaDensity.length;
+        int adapterCount = mAdapter.getCount();
+        if (mLayoutOnEnd) {
+            this.mEndFree = (adapterCount + mStartFree) % mXRegularity;
+            this.mYRegularity = (int) Math.ceil((float) (adapterCount + mStartFree) / mXRegularity);
+        } else {
+            this.mStartFree = (adapterCount + mEndFree) % mXRegularity;
+            this.mYRegularity = (int) Math.ceil((float) (adapterCount + mEndFree) / mXRegularity);
+        }
+        // 存放区域的二维数组,区域不满时自动扩展
+        this.mAreaDensity = extendsArray(mAreaDensity, mYRegularity - mAreaDensity[0].length, mLayoutOnEnd);
     }
 
     /**
@@ -148,25 +168,15 @@ public class RandomLayout extends ViewGroup {
         if (null == mAdapter) {
             return;
         }
-        // 先把子View全部存入集合
-        final int childCount = super.getChildCount();
-        for (int i = childCount - 1; i >= 0; i--) {
-            pushRecycler(super.getChildAt(i));
-        }
-        // 删除所有子View
-        super.removeAllViewsInLayout();
-        // 得到Adapter中的数据量
-        final int count = mAdapter.getCount();
-        for (int i = 0; i < count; i++) {
+        int count = mAdapter.getCount();
+        for (int i = mFixedViews.size(); i < count; i++) {
             // 从集合中取出之前存入的子View
             View convertView = popRecycler();
-            // 把该子View作为adapter的getView的历史View传入，得到返回的View
-            View newChild = mAdapter.getView(i, convertView);
-            if (newChild != convertView) {// 如果发生了复用，那么newChild应该等于convertView
+            View newChild = mAdapter.getView(getContext(), i, convertView);
+            if (newChild != convertView) {
                 // 这说明没发生复用，所以重新把这个没用到的子View存入集合中
                 pushRecycler(convertView);
             }
-            // 调用父类的方法把子View添加进来
             ViewGroup.LayoutParams layoutParams = newChild.getLayoutParams();
             if (layoutParams == null) {
                 layoutParams = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
@@ -176,23 +186,18 @@ public class RandomLayout extends ViewGroup {
     }
 
     /**
-     * 重新分配区域
-     */
-    public void redistribute() {
-        resetAllAreas();// 重新设置区域
-        requestLayout();
-    }
-
-    /**
      * 重新更新子View
      */
     public void refresh() {
-        resetAllAreas();// 重新分配区域
+        //resetAllAreas();// 重新分配区域
+        refreshRegularity();
         generateChildren();// 重新产生子View
         requestLayout();
     }
 
-    public void onScroll() {
+    @Override
+    protected void onScrollChanged(int l, int t, int oldl, int oldt) {
+        super.onScrollChanged(l, t, oldl, oldt);
         for (int i = 0; i < getChildCount(); i++) {
             final View view = getChildAt(i);
             final int[] location = new int[2];
@@ -200,19 +205,19 @@ public class RandomLayout extends ViewGroup {
 
             float scale;
             int out = 0;
-            if (mOrientation == HORIZONTAL) {
+            if (getOrientation() == HORIZONTAL) {
                 if (location[0] < 0) {
                     out = Math.abs(location[0]);
                 }
-                if (location[0] + view.getWidth() > mScreenWidth) {
-                    out = Math.abs(location[0] + view.getWidth() - mScreenWidth);
+                if (location[0] + view.getWidth() > getParentWidth()) {
+                    out = Math.abs(location[0] + view.getWidth() - getParentWidth());
                 }
             } else {
                 if (location[1] < 0) {
                     out = Math.abs(location[1]);
                 }
-                if (location[1] + view.getHeight() > mScreenHeigth) {
-                    out = Math.abs(location[1] + view.getHeight() - mScreenHeigth);
+                if (location[1] + view.getHeight() > getParentHeight()) {
+                    out = Math.abs(location[1] + view.getHeight() - getParentHeight());
                 }
             }
             scale = 1 - (float) out / view.getWidth();
@@ -226,8 +231,8 @@ public class RandomLayout extends ViewGroup {
 
     @Override
     public void removeAllViews() {
-        super.removeAllViews();// 先删除所有View
-        resetAllAreas();// 重新设置所有区域
+        super.removeAllViews();
+        resetAllAreas();
     }
 
     @Override
@@ -246,9 +251,8 @@ public class RandomLayout extends ViewGroup {
                 maxChildHeight = measuredHeight;
             }
         }
-        int width;
-        int height;
-        if (mOrientation == VERTICAL) {
+        int width, height;
+        if (getOrientation() == VERTICAL) {
             width = MeasureSpec.getSize(widthMeasureSpec);
             height = (int) (mYRegularity * maxChildHeight * 1.2);
         } else {
@@ -262,14 +266,31 @@ public class RandomLayout extends ViewGroup {
     public void onLayout(boolean changed, int l, int t, int r, int b) {
         // 确定自身的宽高
         int thisW, thisH;
-        if (mOrientation == VERTICAL) {
+        if (getOrientation() == VERTICAL) {
             thisW = r - l - this.getPaddingLeft() - this.getPaddingRight();
             thisH = b - t - this.getPaddingTop() - this.getPaddingBottom();
         } else {
             thisH = r - l - this.getPaddingLeft() - this.getPaddingRight();
             thisW = b - t - this.getPaddingTop() - this.getPaddingBottom();
         }
-        // 自身内容区域的右边和下边
+
+        //如果是向前添加布局，将已经布局的view整体向后偏移offset
+        int offset = thisH - mLastH;
+        if (!mLayoutOnEnd) {
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i);
+                if (getOrientation() == VERTICAL) {
+                    child.layout(child.getLeft(), child.getTop() + offset, child.getRight(), child.getBottom() + offset);
+                } else {
+                    child.layout(child.getLeft() + offset, child.getTop(), child.getRight() + offset, child.getBottom());
+                }
+            }
+        }
+
+        //记录本次计算的自身宽高，VERTICAL时代表实际布局的高，HORIZONTAL时代表实际布局的宽
+        mLastH = thisH;
+
+        //自身内容区域的右边和下边
         int contentRight = r - getPaddingRight();
         int contentBottom = b - getPaddingBottom();
 
@@ -288,7 +309,7 @@ public class RandomLayout extends ViewGroup {
                 int childH = child.getLayoutParams().height;
                 // 用自身的高度去除以分配值，可以算出每一个区域的宽和高
                 float rowH, colW;
-                if (mOrientation == VERTICAL) {
+                if (getOrientation() == VERTICAL) {
                     colW = thisW / (float) mXRegularity;
                     rowH = thisH / (float) mYRegularity;
                 } else {
@@ -298,17 +319,17 @@ public class RandomLayout extends ViewGroup {
 
                 int arrayIdx;
                 while ((arrayIdx = getAreaIdx(areaCapacity)) >= 0) { // 如果使用区域大于0，就可以为子View尝试分配
-                    int row = arrayIdx / mXRegularity;
-                    int col = arrayIdx % mXRegularity;// 计算出在二维数组中的位置
+                    int row = arrayIdx % mXRegularity;// 计算出在二维数组中的位置
+                    int col = arrayIdx / mXRegularity;
 
                     //实际的排列方向
                     float rowAct, colAct;
-                    if (mOrientation == VERTICAL) {
-                        rowAct = col;
-                        colAct = row;
-                    } else {
+                    if (getOrientation() == VERTICAL) {
                         rowAct = row;
                         colAct = col;
+                    } else {
+                        rowAct = col;
+                        colAct = row;
                     }
                     if (mAreaDensity[row][col] < areaCapacity) {// 区域密度未超过限定，将view置入该区域
                         int xOffset = (int) colW - childW; // 区域宽度 和 子View的宽度差值，差值可以用来做区域内的位置随机
@@ -346,6 +367,15 @@ public class RandomLayout extends ViewGroup {
             }
         }
         mHasLayout = true;
+
+        //如果是向前添加布局,将布局滚动回原来位置
+        if (!mLayoutOnEnd) {
+            if (getOrientation() == VERTICAL) {
+                scrollBy(0, offset);
+            } else {
+                scrollBy(offset, 0);
+            }
+        }
     }
 
     /**
@@ -355,20 +385,47 @@ public class RandomLayout extends ViewGroup {
      */
     private int getAreaIdx(int areaCapacity) {
         ArrayList<Integer> temp = new ArrayList<>();
-        for (int i = 0; i < mAreaDensity.length; i++) {
-            for (int j = 0; j < mAreaDensity[i].length; j++) {
-                if (mAreaDensity[i][j] < areaCapacity) {
-                    //添加位置
-                    temp.add(i * mAreaDensity[i].length + (j + 1));
+        for (int y = 0; y < mYRegularity; y++) {
+            for (int x = 0; x < mXRegularity; x++) {
+                if (mAreaDensity[x][y] < areaCapacity) {
+                    temp.add(y * mXRegularity + (x + 1)); //栗子：第13个 = 3 * 4 + (0 + 1)
                 }
             }
         }
-        if (temp.size() == 0) {
-            return -1;
-        } else {
+        int num;
+        //如果是向前添加布局,从最后一个位置开始取
+        if (mLayoutOnEnd) {
             //return temp.get(mRdm.nextInt(temp.size() - 1)) - 1; 是否有序
-            return temp.get(0) - 1;
+            num = mStartFree;
+        } else {
+            num = temp.size() - 1 - mEndFree;
         }
+        if (temp.size() > num && num >= 0) {
+            return temp.get(num) - 1;
+        }
+        return -1;
+    }
+
+    /**
+     * 扩展二维数组（Y方向扩展）
+     *
+     * @param array  需要扩展的array
+     * @param extend Y方向扩展的大小
+     * @return 扩展后的二维数组
+     */
+    private int[][] extendsArray(int[][] array, int extend, boolean addEnd) {
+        if (extend <= 0) {
+            return array;
+        }
+        int[][] arr = new int[array.length][array[0].length + extend];
+        for (int i = 0; i < array.length; i++) {
+            if (addEnd) {
+                System.arraycopy(array[i], 0, arr[i], 0, array[i].length);  //数组拷贝
+            } else {
+                System.arraycopy(array[i], 0, arr[i], extend, array[i].length);
+            }
+        }
+        return arr;
     }
 
     /**
@@ -399,33 +456,16 @@ public class RandomLayout extends ViewGroup {
         return false;
     }
 
-    /**
-     * 排列方向相关
-     */
-    public static final int HORIZONTAL = 0;
-    public static final int VERTICAL = 1;
-
-    @IntDef({HORIZONTAL, VERTICAL})
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface OrientationMode {
+    private int getParentWidth() {
+        ViewGroup parent = (ViewGroup) getParent();
+        return parent.getWidth();
     }
 
-    public void setOrientation(@OrientationMode int orientation) {
-        if (mOrientation != orientation) {
-            mOrientation = orientation;
-            requestLayout();
-        }
+    private int getParentHeight() {
+        ViewGroup parent = (ViewGroup) getParent();
+        return parent.getHeight();
     }
 
-    /**
-     * 内部类、接口
-     */
-    public interface Adapter {
-
-        int getCount();
-
-        View getView(int position, View convertView);
-    }
 
     public static class LayoutParams extends MarginLayoutParams {
 
@@ -438,4 +478,6 @@ public class RandomLayout extends ViewGroup {
             super(w, h);
         }
     }
+
 }
+
